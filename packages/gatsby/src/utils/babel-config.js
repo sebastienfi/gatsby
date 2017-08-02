@@ -162,7 +162,7 @@ module.exports = async function babelConfig(program, stage) {
   ].forEach(preset => {
     babelrc.presets.push(preset)
   })
-  ;[`add-module-exports`, `transform-object-assign`].forEach(plugin => {
+  ;[`transform-object-assign`].forEach(plugin => {
     babelrc.plugins.push(plugin)
   })
 

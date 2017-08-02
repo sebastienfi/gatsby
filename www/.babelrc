@@ -1,7 +1,5 @@
 {
-  "presets": ['es2015', 'stage-1', 'react'],
   "plugins": [
-    'add-module-exports',
     [
       "transform-react-jsx",
       { "pragma": "Glamor.createElement" }

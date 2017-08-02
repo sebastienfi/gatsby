@@ -2,7 +2,8 @@
   "lerna": "2.0.0-rc.5",
   "npmClient": "npm",
   "packages": [
-    "packages/*"
+    "packages/*",
+    "www"
   ],
   "hoist": true,
   "version": "1.5.3"
