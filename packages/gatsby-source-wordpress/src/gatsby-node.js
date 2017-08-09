@@ -3,6 +3,10 @@ const crypto = require(`crypto`)
 const _ = require(`lodash`)
 const stringify = require(`json-stringify-safe`)
 const colorized = require(`./output-color`)
+const getUrls = require(`get-urls`)
+
+const gatsbyFS = require(`gatsby-source-filesystem`)
+const mkdirp = require(`mkdirp`)
 
 const typePrefix = `wordpress__`
 
@@ -17,6 +21,7 @@ let _getNode
 let _useACF
 let _hostingWPCOM
 let _auth
+let _localAssets
 
 let _parentChildNodes = []
 
@@ -29,8 +34,8 @@ const refactoredEntityTypes = {
 
 // ========= Main ===========
 exports.sourceNodes = async (
-  { boundActionCreators, getNode, hasNodeChanged, store },
-  { baseUrl, protocol, hostingWPCOM, useACF, auth, verboseOutput }
+  { boundActionCreators, getNode, getNodes, hasNodeChanged, store },
+  { baseUrl, protocol, hostingWPCOM, useACF, auth, verboseOutput, localAssets }
 ) => {
   const {
     createNode,
@@ -44,6 +49,7 @@ exports.sourceNodes = async (
   _useACF = useACF
   _hostingWPCOM = hostingWPCOM
   _auth = auth
+  _localAssets = localAssets
 
   // If the site is hosted on wordpress.com, the API Route differs.
   // Same entity types are exposed (excepted for medias and users which need auth)
@@ -55,44 +61,42 @@ exports.sourceNodes = async (
     url = `${_siteURL}/wp-json`
   }
 
-  console.log()
-  console.log(
-    colorized.out(
-      `=START PLUGIN=====================================`,
-      colorized.color.Font.FgBlue
+  if (_verbose)
+    console.log(
+      colorized.out(`Site URL: ${_siteURL}`, colorized.color.Font.FgBlue)
     )
-  )
-  console.time(`=END PLUGIN=====================================`)
-  console.log(``)
-  console.log(
-    colorized.out(`Site URL: ${_siteURL}`, colorized.color.Font.FgBlue)
-  )
-  console.log(
-    colorized.out(
-      `Site hosted on Wordpress.com: ${hostingWPCOM}`,
-      colorized.color.Font.FgBlue
+  if (_verbose)
+    console.log(
+      colorized.out(
+        `Site hosted on Wordpress.com: ${hostingWPCOM}`,
+        colorized.color.Font.FgBlue
+      )
     )
-  )
-  console.log(
-    colorized.out(`Using ACF: ${useACF}`, colorized.color.Font.FgBlue)
-  )
-  console.log(
-    colorized.out(
-      `Using Auth: ${_auth.user} ${_auth.pass}`,
-      colorized.color.Font.FgBlue
+  if (_verbose)
+    console.log(
+      colorized.out(`Using ACF: ${useACF}`, colorized.color.Font.FgBlue)
     )
-  )
-  console.log(
-    colorized.out(
-      `Verbose output: ${verboseOutput}`,
-      colorized.color.Font.FgBlue
+  if (_verbose)
+    console.log(
+      colorized.out(
+        `Using Auth: ${_auth.user} ${_auth.pass}`,
+        colorized.color.Font.FgBlue
+      )
     )
-  )
-  console.log(``)
-  console.log(
-    colorized.out(`Mama Route URL: ${url}`, colorized.color.Font.FgBlue)
-  )
-  console.log(``)
+  if (_verbose)
+    console.log(
+      colorized.out(
+        `Verbose output: ${verboseOutput}`,
+        colorized.color.Font.FgBlue
+      )
+    )
+  if (_verbose)
+    console.log(
+      colorized.out(
+        `Mother of all the Routes: ${url}`,
+        colorized.color.Font.FgBlue
+      )
+    )
 
   // Touch existing Wordpress nodes so Gatsby doesn`t garbage collect them.
   _.values(store.getState().nodes)
@@ -105,18 +109,8 @@ exports.sourceNodes = async (
   if (allRoutes != undefined) {
     let validRoutes = getValidRoutes(allRoutes, url, baseUrl)
 
-    console.log(``)
-    console.log(
-      colorized.out(
-        `Fetching the JSON data from ${validRoutes.length} valid API Routes...`,
-        colorized.color.Font.FgBlue
-      )
-    )
-    console.log(``)
-
     for (let route of validRoutes) {
       await fetchData(route, createNode)
-      console.log(``)
     }
 
     for (let item of _parentChildNodes) {
@@ -126,27 +120,90 @@ exports.sourceNodes = async (
       })
     }
 
+    // Extract URLs and download a local copy of the file
+    if (_localAssets) {
+      const nodes = await downloadAssets(store, getNodes)
+      console.log(`will iterate over nodes`, nodes)
+      for (let node of nodes) {
+        createNode(node)
+      }
+    }
+
+    console.log(`end of source plugin================`)
+
     setPluginStatus({
       status: {
         lastFetched: new Date().toJSON(),
       },
     })
-
-    console.timeEnd(`=END PLUGIN=====================================`)
   } else {
-    console.log(
-      colorized.out(`No routes to fetch. Ending.`, colorized.color.Font.FgRed)
-    )
+    if (_verbose)
+      console.log(
+        colorized.out(`No routes to fetch. Ending.`, colorized.color.Font.FgRed)
+      )
   }
+
   return
 }
 
 /**
+ * Downloads the assets locally
+ *
+ * @param {any} store
+ * @param {any} getNodes
+ * @returns
+ */
+async function downloadAssets(store, getNodes) {
+  try {
+    let nodes = []
+
+    const cacheSitePath = `${store.getState().program
+      .directory}/public/static/images`
+    mkdirp(cacheSitePath, function(err) {
+      if (err) console.error(err)
+    })
+
+    const allUrls = getUrls(
+      JSON.stringify(
+        getNodes().filter(n => n.internal.owner === `gatsby-source-wordpress`)
+      )
+    )
+
+    const assetsFileNodes = await [...allUrls]
+      .filter(
+        url =>
+          url.endsWith(`jpeg`) ||
+          url.endsWith(`jpg`) ||
+          url.endsWith(`png`) ||
+          url.endsWith(`webp`) ||
+          url.endsWith(`tif`) ||
+          url.endsWith(`tiff`) ||
+          url.endsWith(`svg`) ||
+          url.endsWith(`gif`)
+      )
+      .map(assetUrl =>
+        gatsbyFS.createFileNode(assetUrl, {
+          name: `images`,
+          path: cacheSitePath,
+        })
+      )
+
+    return Promise.all(assetsFileNodes).then(filePNode => {
+      // console.log(`filePNode is`, filePNode)
+      nodes = nodes.concat(filePNode)
+      return nodes
+    })
+  } catch (e) {
+    console.log(e)
+  }
+}
+
+/**
  * Helper for axios GET with auth
- * 
- * @param {any} url 
- * @param {any} auth 
- * @returns 
+ *
+ * @param {any} url
+ * @param {any} auth
+ * @returns
  */
 async function axiosHelper(url) {
   let result
@@ -170,44 +227,35 @@ async function axiosHelper(url) {
 
 /**
  * Handles HTTP Exceptions (axios)
- * 
- * @param {any} e 
+ *
+ * @param {any} e
  */
 function httpExceptionHandler(e) {
-  console.log(
-    colorized.out(
-      `The server response was "${e.response.status} ${e.response.statusText}"`,
-      colorized.color.Font.FgRed
+  if (_verbose)
+    console.log(
+      colorized.out(
+        `The server response was "${e.response.status} ${e.response
+          .statusText}"`,
+        colorized.color.Font.FgRed
+      )
     )
-  )
   if (e.response.data.message != undefined)
-    console.log(
-      colorized.out(
-        `Inner exception message : "${e.response.data.message}"`,
-        colorized.color.Font.FgRed
+    if (_verbose)
+      console.log(
+        colorized.out(
+          `Inner exception message : "${e.response.data.message}"`,
+          colorized.color.Font.FgRed
+        )
       )
-    )
-  if (
-    e.response.status == 400 ||
-    e.response.status == 401 ||
-    e.response.status == 402 ||
-    e.response.status == 403
-  )
-    console.log(
-      colorized.out(
-        `Auth on endpoint is not implemented on this gatsby-source plugin.`,
-        colorized.color.Font.FgRed
-      )
-    )
 }
 
 /**
  * Extract valid routes and format its data.
- * 
- * @param {any} allRoutes 
- * @param {any} url 
- * @param {any} baseUrl 
- * @returns 
+ *
+ * @param {any} allRoutes
+ * @param {any} url
+ * @param {any} baseUrl
+ * @returns
  */
 function getValidRoutes(allRoutes, url, baseUrl) {
   let validRoutes = []
@@ -294,12 +342,13 @@ function getValidRoutes(allRoutes, url, baseUrl) {
       )
     if (_hostingWPCOM) {
       // TODO : Need to test that out with ACF on Wordpress.com hosted site. Need a premium account on wp.com to install extensions.
-      console.log(
-        colorized.out(
-          `The ACF options pages is untested under wordpress.com hosting. Please let me know if it works.`,
-          colorized.color.Effect.Blink
+      if (_verbose)
+        console.log(
+          colorized.out(
+            `The ACF options pages is untested under wordpress.com hosting. Please let me know if it works.`,
+            colorized.color.Effect.Blink
+          )
         )
-      )
     }
   }
 
@@ -308,8 +357,8 @@ function getValidRoutes(allRoutes, url, baseUrl) {
 
 /**
  * Extract the raw entity type from route
- * 
- * @param {any} route 
+ *
+ * @param {any} route
  */
 const getRawEntityType = route =>
   route._links.self.substring(
@@ -319,8 +368,8 @@ const getRawEntityType = route =>
 
 /**
  * Extract the route manufacturer
- * 
- * @param {any} route 
+ *
+ * @param {any} route
  */
 const getManufacturer = route =>
   route.namespace.substring(0, route.namespace.lastIndexOf(`/`))
@@ -337,19 +386,20 @@ async function fetchData(route, createNode, parentNodeId) {
   const url = route.url
 
   if (parentNodeId != undefined) {
-    console.log(
-      colorized.out(`Extended node content`, colorized.color.Font.FgBlue),
-      url
-    )
+    if (_verbose)
+      console.log(
+        colorized.out(`Extended node content`, colorized.color.Font.FgBlue),
+        url
+      )
   } else {
-    console.log(
-      colorized.out(
-        `=== [ Fetching ${type} ] ===`,
-        colorized.color.Font.FgBlue
-      ),
-      url
-    )
-    if (_verbose) console.time(`Fetching the ${type} took`)
+    if (_verbose)
+      console.log(
+        colorized.out(
+          `=== [ Fetching ${type} ] ===`,
+          colorized.color.Font.FgBlue
+        ),
+        url
+      )
   }
 
   let routeResponse = await axiosHelper(url)
@@ -383,19 +433,20 @@ async function fetchData(route, createNode, parentNodeId) {
     ) {
       length = Object.keys(routeResponse.data).length
     }
-    console.log(
-      colorized.out(`${type} fetched : ${length}`, colorized.color.Font.FgGreen)
-    )
+    if (_verbose)
+      console.log(
+        colorized.out(
+          `${type} fetched : ${length}`,
+          colorized.color.Font.FgGreen
+        )
+      )
   }
-
-  if (_verbose && parentNodeId == undefined)
-    console.timeEnd(`Fetching the ${type} took`)
 }
 
 /**
  * Encrypts a String using md5 hash of hexadecimal digest.
- * 
- * @param {any} str 
+ *
+ * @param {any} str
  */
 const digest = str => crypto.createHash(`md5`).update(str).digest(`hex`)
 
@@ -455,9 +506,9 @@ function createGraphQLNode(ent, type, createNode, parentNodeId) {
 
 /**
  * Loop through fields to validate naming conventions and extract child nodes.
- * 
+ *
  * @param {any} ent
- * @param {any} newEnt 
+ * @param {any} newEnt
  * @returns the new entity with fields
  */
 function addFields(ent, newEnt, createNode) {
@@ -496,9 +547,9 @@ function addFields(ent, newEnt, createNode) {
 
 /**
  * Add fields recursively
- * 
- * @param {any} ent 
- * @param {any} newEnt 
+ *
+ * @param {any} ent
+ * @param {any} newEnt
  * @returns the new node
  */
 function recursiveAddFields(ent, newEnt) {
@@ -527,8 +578,8 @@ function recursiveAddFields(ent, newEnt) {
 
 /**
  * Validate the GraphQL naming convetions & protect specific fields.
- * 
- * @param {any} key 
+ *
+ * @param {any} key
  * @returns the valid name
  */
 function getValidName(key) {
